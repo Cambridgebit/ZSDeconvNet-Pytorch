@@ -24,9 +24,9 @@ ENV/
 .ipynb_checkpoints/
 
 # Output directories (training results)
-output/
-output_*/
-results/
+# output/
+# output_*/
+# results/
 
 # OS
 .DS_Store
