@@ -23,11 +23,6 @@ ENV/
 # Jupyter Notebook Checkpoint
 .ipynb_checkpoints/
 
-# Output directories (training results)
-# output/
-# output_*/
-# results/
-
 # OS
 .DS_Store
 Thumbs.db
@@ -38,7 +33,5 @@ Thumbs.db
 # Environment variables
 .env
 
-# Training outputs
-output*/
-*.pt
-*.pth
+# Training outputs (keep results/, exclude others)
+output/
