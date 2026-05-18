@@ -1,37 +1,22 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-*.egg-info/
-.eggs/
-
-# Virtual environments
+.venv/
 venv/
 env/
-ENV/
-.venv/
-
-# IDE
 .vscode/
 .idea/
-*.swp
-*.swo
-*~
-
-# Jupyter Notebook Checkpoint
+__pycache__/
+*.pyc
 .ipynb_checkpoints/
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Logs
-*.log
-
-# Environment variables
-.env
-
-# Training outputs (keep results/, exclude others)
+runs/
 output/
+results/
+checkpoints/
+datasets/
+datasets_full/
+*.pt
+*.pth
+*.png
+*.tif
+*.tiff
+*.mrc
+*.log
+.env

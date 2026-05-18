@@ -1,15 +1,9 @@
-"""
-Model architectures for ZSDeconvNet
-"""
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 
 class ConvBlock(nn.Module):
-    """Convolutional block with ReLU activations"""
-
     def __init__(self, in_ch, out_ch, n_conv=3):
         super().__init__()
         layers = []
@@ -23,8 +17,6 @@ class ConvBlock(nn.Module):
 
 
 class Encoder(nn.Module):
-    """Encoder with skip connections"""
-
     def __init__(self, in_ch=1, base_ch=32, depth=4, n_conv=3):
         super().__init__()
         self.blocks = nn.ModuleList()
@@ -39,29 +31,22 @@ class Encoder(nn.Module):
 
     def forward(self, x):
         skips = []
-        for blk, pool in zip(self.blocks, self.pools):
-            x = blk(x)
+        for block, pool in zip(self.blocks, self.pools):
+            x = block(x)
             skips.append(x)
             x = pool(x)
         return x, skips
 
 
 class DecoderBlock(nn.Module):
-    """Decoder block with upsampling and skip connection"""
-
     def __init__(self, in_ch, skip_ch, out_ch, n_conv=3):
         super().__init__()
         self.up = nn.Upsample(scale_factor=2, mode="nearest")
-        layers = [
-            nn.Conv2d(in_ch + skip_ch, out_ch, 3, padding=1),
-            nn.ReLU(inplace=True),
-        ]
+        layers = [nn.Conv2d(in_ch + skip_ch, out_ch, 3, padding=1), nn.ReLU(inplace=True)]
         cur = out_ch
         for _ in range(n_conv - 1):
             next_ch = max(out_ch // 2, 1)
-            layers.extend(
-                [nn.Conv2d(cur, next_ch, 3, padding=1), nn.ReLU(inplace=True)]
-            )
+            layers.extend([nn.Conv2d(cur, next_ch, 3, padding=1), nn.ReLU(inplace=True)])
             cur = next_ch
         self.conv = nn.Sequential(*layers)
         self.out_ch = cur
@@ -74,8 +59,6 @@ class DecoderBlock(nn.Module):
 
 
 class UNetStage(nn.Module):
-    """Single UNet stage (encoder + decoder)"""
-
     def __init__(self, in_ch=1, base_ch=32, depth=4, n_conv=3):
         super().__init__()
         self.encoder = Encoder(in_ch, base_ch, depth, n_conv)
@@ -98,117 +81,59 @@ class UNetStage(nn.Module):
     def forward(self, x):
         x, skips = self.encoder(x)
         x = self.mid(x)
-        for dec, skip in zip(self.decoders, reversed(skips)):
-            x = dec(x, skip)
+        for decoder, skip in zip(self.decoders, reversed(skips)):
+            x = decoder(x, skip)
         return x
 
 
-class DenoiseUNet(nn.Module):
-    """
-    Denoising UNet
-
-    Args:
-        base_ch: Base number of channels
-        depth: UNet depth
-        n_conv: Convolutions per block
-    """
-
-    def __init__(self, base_ch=32, depth=4, n_conv=3):
-        super().__init__()
-        self.encoder = UNetStage(1, base_ch, depth, n_conv)
-        self.out = nn.Conv2d(self.encoder.out_ch, 1, 3, padding=1)
-
-    def forward(self, x):
-        feat = self.encoder(x)
-        return F.relu(self.out(feat))
-
-
 class DirectDeconvNet(nn.Module):
-    """
-    Direct deconvolution network
-
-    Args:
-        base_ch: Base number of channels
-        depth: UNet depth
-        n_conv: Convolutions per block
-        upsample: 2x upsampling
-    """
-
-    def __init__(self, base_ch=32, depth=4, n_conv=3, upsample=True):
+    def __init__(
+        self,
+        base_ch=32,
+        depth=4,
+        n_conv=3,
+        upsample=True,
+        detail_branch=False,
+        detail_scale=0.2,
+        gated_detail=True,
+    ):
         super().__init__()
         self.upsample = upsample
+        self.detail_branch = detail_branch
+        self.detail_scale = detail_scale
+        self.gated_detail = gated_detail
+        self.last_detail = None
         self.stage2 = UNetStage(1, base_ch, depth, n_conv)
         self.refine1 = nn.Conv2d(self.stage2.out_ch, 128, 3, padding=1)
         self.refine2 = nn.Conv2d(128, 128, 3, padding=1)
         self.out2 = nn.Conv2d(128, 1, 3, padding=1)
+        if self.detail_branch:
+            self.detail1 = nn.Conv2d(128, 64, 3, padding=1)
+            self.detail2 = nn.Conv2d(64, 1, 3, padding=1)
+            if self.gated_detail:
+                self.detail_gate = nn.Conv2d(128, 1, 3, padding=1)
+                nn.init.zeros_(self.detail_gate.weight)
+                nn.init.constant_(self.detail_gate.bias, -1.0)
+            nn.init.zeros_(self.detail2.weight)
+            nn.init.zeros_(self.detail2.bias)
+
+    def detail_regularization(self):
+        if self.last_detail is None:
+            return None
+        return self.last_detail.abs().mean()
 
     def forward(self, x):
+        self.last_detail = None
         f2 = self.stage2(x)
         if self.upsample:
             f2 = F.interpolate(f2, scale_factor=2, mode="nearest")
-        deconv = F.relu(self.out2(F.relu(self.refine2(F.relu(self.refine1(f2))))))
-        return deconv
-
-
-class JointDenoiseDeconvNet(nn.Module):
-    """
-    Joint denoising + deconvolution network
-
-    Architecture:
-        Input (noisy) → DenoiseUNet → Denoised → DeconvUNet → Deconvolved
-
-    Args:
-        base_ch: Base number of channels
-        depth: UNet depth
-        n_conv: Convolutions per block
-        upsample: 2x upsampling
-    """
-
-    def __init__(self, base_ch=32, depth=4, n_conv=3, upsample=True):
-        super().__init__()
-        self.upsample = upsample
-
-        # Denoising stage
-        self.denoise = UNetStage(1, base_ch, depth, n_conv)
-        self.out_denoise = nn.Conv2d(self.denoise.out_ch, 1, 3, padding=1)
-
-        # Deconvolution stage
-        self.deconv = UNetStage(1, base_ch, depth, n_conv)
-        self.refine1 = nn.Conv2d(self.deconv.out_ch, 128, 3, padding=1)
-        self.refine2 = nn.Conv2d(128, 128, 3, padding=1)
-        self.out_deconv = nn.Conv2d(128, 1, 3, padding=1)
-
-    def forward(self, x):
-        # Denoising
-        feat_denoise = self.denoise(x)
-        denoised = F.relu(self.out_denoise(feat_denoise))
-
-        # Deconvolution (using denoised as input)
-        feat_deconv = self.deconv(denoised)
-        if self.upsample:
-            feat_deconv = F.interpolate(feat_deconv, scale_factor=2, mode="nearest")
-        deconv = F.relu(
-            self.out_deconv(F.relu(self.refine2(F.relu(self.refine1(feat_deconv)))))
-        )
-
-        return denoised, deconv
-
-
-class Noise2VoidUNet(nn.Module):
-    """
-    Noise2Void blind-spot UNet
-
-    Args:
-        base_ch: Base number of channels
-        depth: UNet depth (shallower than standard)
-        n_conv: Convolutions per block
-    """
-
-    def __init__(self, base_ch=64, depth=3, n_conv=2):
-        super().__init__()
-        self.encoder = UNetStage(1, base_ch, depth, n_conv)
-        self.out = nn.Conv2d(self.encoder.out_ch, 1, 3, padding=1)
-
-    def forward(self, x):
-        feat = self.encoder(x)
-        return self.out(feat)
+        refined = F.relu(self.refine2(F.relu(self.refine1(f2))))
+        out = self.out2(refined)
+        if self.detail_branch:
+            detail = self.detail2(F.relu(self.detail1(refined)))
+            detail = detail - F.avg_pool2d(detail, kernel_size=5, stride=1, padding=2)
+            if self.gated_detail:
+                detail = torch.sigmoid(self.detail_gate(refined)) * detail
+            self.last_detail = detail
+            out = out + self.detail_scale * detail
+        return F.relu(out)
